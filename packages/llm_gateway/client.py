@@ -15,14 +15,31 @@ class LLMGateway:
     def __init__(self, config: dict, redis_client=None):
         self.config = config
         self.redis = redis_client
+
+        # Provider priority: Jev > OpenAI > Gemini > Anthropic
         self.use_jev = bool(config.get('jev_api_key'))
-        
-        # OpenAI client (fallback)
-        if config.get('fallback_to_openai') and config.get('openai_api_key'):
+
+        # OpenAI client
+        if config.get('openai_api_key'):
             import openai
             self.openai_client = openai.OpenAI(api_key=config['openai_api_key'])
         else:
             self.openai_client = None
+
+        # Gemini client
+        if config.get('gemini_api_key'):
+            import google.generativeai as genai
+            genai.configure(api_key=config['gemini_api_key'])
+            self.gemini_client = genai
+        else:
+            self.gemini_client = None
+
+        # Anthropic client
+        if config.get('anthropic_api_key'):
+            import anthropic
+            self.anthropic_client = anthropic.Anthropic(api_key=config['anthropic_api_key'])
+        else:
+            self.anthropic_client = None
     
     def complete(self, request: LLMRequest) -> LLMResponse:
         """
@@ -46,11 +63,15 @@ class LLMGateway:
                     cached=True
                 )
         
-        # 3. Call appropriate LLM
+        # 3. Call appropriate LLM (priority: Jev > OpenAI > Gemini > Anthropic > mock)
         if self.use_jev:
             response = self._call_jev(request)
         elif self.openai_client:
             response = self._call_openai(request)
+        elif self.gemini_client:
+            response = self._call_gemini(request)
+        elif self.anthropic_client:
+            response = self._call_anthropic(request)
         else:
             response = self._mock_response(request)
         
@@ -107,6 +128,7 @@ class LLMGateway:
     def embed_text(self, text: str) -> list:
         """
         Generate embedding for text.
+        Priority: OpenAI > Gemini > Jev (not implemented)
         """
         if self.openai_client:
             response = self.openai_client.embeddings.create(
@@ -114,6 +136,14 @@ class LLMGateway:
                 input=text
             )
             return response.data[0].embedding
+        elif self.gemini_client:
+            # Gemini embedding
+            result = self.gemini_client.embed_content(
+                model="models/text-embedding-004",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result.embedding.values
         else:
             # Placeholder for Jev embedding
             raise NotImplementedError("Embeddings not yet implemented for Jev")
@@ -173,9 +203,13 @@ class LLMGateway:
             )
             response.raise_for_status()
         except httpx.HTTPError as e:
-            # Fallback to OpenAI if Jev fails
+            # Fallback to next available provider if Jev fails
             if self.openai_client:
                 return self._call_openai(request)
+            elif self.gemini_client:
+                return self._call_gemini(request)
+            elif self.anthropic_client:
+                return self._call_anthropic(request)
             raise RuntimeError(f"Jev API error: {e}")
         
         latency_ms = int((time.time() - start_time) * 1000)
@@ -196,23 +230,99 @@ class LLMGateway:
     def _call_openai(self, request: LLMRequest) -> LLMResponse:
         """Call OpenAI API as fallback"""
         model_name = self._get_openai_model_name(request.tier)
-        
+
         start_time = time.time()
-        
+
         response = self.openai_client.chat.completions.create(
             model=model_name,
             messages=[{"role": m.role, "content": m.content} for m in request.messages],
             temperature=request.temperature,
             max_tokens=request.max_tokens,
         )
-        
+
         latency_ms = int((time.time() - start_time) * 1000)
-        
+
         return LLMResponse(
             content=response.choices[0].message.content,
             model=model_name,
             prompt_tokens=response.usage.prompt_tokens,
             completion_tokens=response.usage.completion_tokens,
+            latency_ms=latency_ms
+        )
+
+    def _call_gemini(self, request: LLMRequest) -> LLMResponse:
+        """Call Gemini API"""
+        model_name = self._get_gemini_model_name(request.tier)
+
+        start_time = time.time()
+
+        # Gemini uses 'user' and 'model' roles, convert OpenAI-style
+        gemini_messages = []
+        for m in request.messages:
+            if m.role == 'system':
+                # Gemini doesn't have system role, prepend to first user message
+                if gemini_messages:
+                    gemini_messages[0]['parts'][0]['text'] = f"{m.content}\n\n{gemini_messages[0]['parts'][0]['text']}"
+                else:
+                    gemini_messages.append({'role': 'user', 'parts': [{'text': m.content}]})
+            elif m.role == 'assistant':
+                gemini_messages.append({'role': 'model', 'parts': [{'text': m.content}]})
+            else:
+                gemini_messages.append({'role': m.role, 'parts': [{'text': m.content}]})
+
+        # Create chat
+        model = self.gemini_client.GenerativeModel(model_name)
+        chat = model.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
+
+        # Send last message
+        response = chat.send_message(
+            gemini_messages[-1]['parts'][0]['text'],
+            generation_config=self.gemini_client.types.GenerationConfig(
+                temperature=request.temperature,
+                max_output_tokens=request.max_tokens,
+            )
+        )
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        return LLMResponse(
+            content=response.text,
+            model=model_name,
+            prompt_tokens=response.usage_metadata.prompt_token_count if hasattr(response.usage_metadata, 'prompt_token_count') else 0,
+            completion_tokens=response.usage_metadata.candidates_token_count if hasattr(response.usage_metadata, 'candidates_token_count') else 0,
+            latency_ms=latency_ms
+        )
+
+    def _call_anthropic(self, request: LLMRequest) -> LLMResponse:
+        """Call Anthropic Claude API"""
+        model_name = self._get_anthropic_model_name(request.tier)
+
+        start_time = time.time()
+
+        # Extract system message if present
+        system_message = None
+        messages = []
+        for m in request.messages:
+            if m.role == 'system':
+                system_message = m.content
+            else:
+                messages.append({"role": m.role, "content": m.content})
+
+        response = self.anthropic_client.messages.create(
+            model=model_name,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            system=system_message,
+            messages=messages,
+        )
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        return LLMResponse(
+            content=response.content[0].text,
+            model=model_name,
+            prompt_tokens=response.usage.input_tokens,
+            completion_tokens=response.usage.output_tokens,
             latency_ms=latency_ms
         )
     
@@ -232,6 +342,24 @@ class LLMGateway:
             ModelTier.BALANCED: self.config.get('openai_balanced_model', 'gpt-4o'),
             ModelTier.DEEP: self.config.get('openai_deep_model', 'gpt-4o'),
             ModelTier.DECISION: self.config.get('openai_balanced_model', 'gpt-4o'),
+        }[tier]
+
+    def _get_gemini_model_name(self, tier: ModelTier) -> str:
+        """Get Gemini model name for tier"""
+        return {
+            ModelTier.FAST: self.config.get('gemini_fast_model', 'gemini-1.5-flash'),
+            ModelTier.BALANCED: self.config.get('gemini_balanced_model', 'gemini-1.5-pro'),
+            ModelTier.DEEP: self.config.get('gemini_deep_model', 'gemini-1.5-pro'),
+            ModelTier.DECISION: self.config.get('gemini_balanced_model', 'gemini-1.5-pro'),
+        }[tier]
+
+    def _get_anthropic_model_name(self, tier: ModelTier) -> str:
+        """Get Anthropic model name for tier"""
+        return {
+            ModelTier.FAST: self.config.get('anthropic_fast_model', 'claude-3-5-haiku-20241022'),
+            ModelTier.BALANCED: self.config.get('anthropic_balanced_model', 'claude-3-5-sonnet-20241022'),
+            ModelTier.DEEP: self.config.get('anthropic_deep_model', 'claude-3-5-sonnet-20241022'),
+            ModelTier.DECISION: self.config.get('anthropic_balanced_model', 'claude-3-5-sonnet-20241022'),
         }[tier]
 
 

@@ -21,8 +21,11 @@ if str(PACKAGES_DIR) not in sys.path:
 
 # Add apps directory to Python path (so apps can be imported as 'core', 'orchestration', etc.)
 APPS_DIR = BASE_DIR.parent  # This is the api directory containing core, orchestration, etc.
-if str(APPS_DIR) not in sys.path:
-    sys.path.insert(0, str(APPS_DIR))
+# Force APPS_DIR to the front even if already present (e.g. cwd added by Celery),
+# otherwise packages/core shadows the 'core' Django app.
+if str(APPS_DIR) in sys.path:
+    sys.path.remove(str(APPS_DIR))
+sys.path.insert(0, str(APPS_DIR))
 
 # Security
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-this-in-production')
@@ -207,13 +210,14 @@ SPECTACULAR_SETTINGS = {
 }
 
 # JWT Configuration
+JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', SECRET_KEY)
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=int(os.environ.get('JWT_ACCESS_TOKEN_LIFETIME', 60))),
     'REFRESH_TOKEN_LIFETIME': timedelta(minutes=int(os.environ.get('JWT_REFRESH_TOKEN_LIFETIME', 1440))),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
+    'SIGNING_KEY': JWT_SECRET_KEY,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
@@ -232,26 +236,39 @@ CHANNEL_LAYERS = {
     },
 }
 
-# Jev LLM Configuration
+# LLM Configuration
 LLM_CONFIG = {
+    # Jev LLM (primary)
     'jev_api_key': os.environ.get('JEV_API_KEY', ''),
     'jev_api_endpoint': os.environ.get('JEV_API_ENDPOINT', 'https://api.jev.ai/v1'),
     'fast_model': os.environ.get('JEV_FAST_MODEL', 'jev-1.5-flash'),
     'balanced_model': os.environ.get('JEV_BALANCED_MODEL', 'jev-1.5-pro'),
     'deep_model': os.environ.get('JEV_DEEP_MODEL', 'jev-1.5-pro-deep'),
     'decision_model': os.environ.get('JEV_DECISION_MODEL', 'jev-decision-v1'),
-    
-    # Cache TTLs per tier
-    'cache_ttl_fast': 300,      # 5 minutes
-    'cache_ttl_balanced': 600,  # 10 minutes
-    'cache_ttl_deep': 1800,     # 30 minutes
-    
-    # Fallback to OpenAI if Jev is not available
+
+    # OpenAI (fallback)
     'fallback_to_openai': True,
     'openai_api_key': os.environ.get('OPENAI_API_KEY', ''),
     'openai_fast_model': os.environ.get('OPENAI_FAST_MODEL', 'gpt-4o-mini'),
     'openai_balanced_model': os.environ.get('OPENAI_BALANCED_MODEL', 'gpt-4o'),
     'openai_deep_model': os.environ.get('OPENAI_DEEP_MODEL', 'gpt-4o'),
+
+    # Gemini (Google)
+    'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
+    'gemini_fast_model': 'gemini-1.5-flash',
+    'gemini_balanced_model': 'gemini-1.5-pro',
+    'gemini_deep_model': 'gemini-1.5-pro',
+
+    # Anthropic (Claude)
+    'anthropic_api_key': os.environ.get('ANTHROPIC_API_KEY', ''),
+    'anthropic_fast_model': 'claude-3-5-haiku-20241022',
+    'anthropic_balanced_model': 'claude-3-5-sonnet-20241022',
+    'anthropic_deep_model': 'claude-3-5-sonnet-20241022',
+
+    # Cache TTLs per tier
+    'cache_ttl_fast': 300,      # 5 minutes
+    'cache_ttl_balanced': 600,  # 10 minutes
+    'cache_ttl_deep': 1800,     # 30 minutes
 }
 
 # External API Configuration

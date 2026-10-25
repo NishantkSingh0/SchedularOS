@@ -14,7 +14,7 @@ api:
 	cd apps/api && source venv/bin/activate && python manage.py runserver 0.0.0.0:8000
 
 worker:
-	cd apps/api && source venv/bin/activate && celery -A schedularos worker -Q realtime,default,bulk,executor --loglevel=info
+	cd apps/api && source venv/bin/activate && celery -A schedularos worker -Q realtime,default,bulk,executor --loglevel=info --pool=threads
 
 beat:
 	cd apps/api && source venv/bin/activate && celery -A schedularos beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
@@ -23,12 +23,12 @@ web:
 	cd apps/web && npm run dev
 
 migrate:
-	cd apps/api && python manage.py makemigrations
-	cd apps/api && python manage.py migrate
+	cd apps/api && source venv/bin/activate && python manage.py makemigrations
+	cd apps/api && source venv/bin/activate && python manage.py migrate
 
 test:
-	cd apps/api && python manage.py test
+	cd apps/api && source venv/bin/activate && python manage.py test
 
 lint:
-	cd apps/api && flake8 .
-	cd apps/api && mypy .
+	cd apps/api && source venv/bin/activate && flake8 .
+	cd apps/api && source venv/bin/activate && mypy .

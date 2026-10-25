@@ -12,8 +12,10 @@ PACKAGES_DIR = BASE_DIR.parent.parent / 'packages'
 if str(PACKAGES_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGES_DIR))
 # Add apps directory (so 'core', 'orchestration', etc. can be imported)
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
+# Force to the front even if already present, so packages/core can't shadow it.
+if str(BASE_DIR) in sys.path:
+    sys.path.remove(str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR))
 
 
 def main():

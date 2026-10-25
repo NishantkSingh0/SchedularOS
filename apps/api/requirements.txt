@@ -1,5 +1,6 @@
 amqp==5.4.1
 annotated-types==0.8.0
+anthropic==0.44.0
 anyio==4.15.1
 asgiref==3.12.1
 attrs==26.1.0
